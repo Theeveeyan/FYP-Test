@@ -1,0 +1,268 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import numpy as np
+import pandas as pd
+from bs4 import BeautifulSoup
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import make_scorer, accuracy_score, f1_score
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import confusion_matrix, roc_auc_score, recall_score, precision_score
+
+
+# In[2]:
+
+
+filepath="amazon_cells_labelled.txt"
+amazon_df=pd.read_csv(filepath,
+                        delimiter='\t',
+                        header=None, 
+                        names=['review', 'sentiment'])
+
+
+# Data Preprocessing
+
+# In[3]:
+
+
+amazon_df['review'] = amazon_df['review'].str.lower()
+
+
+# In[4]:
+
+
+amazon_df['review'] = amazon_df['review'].str.replace(r'[^\w\s]+', '')
+
+
+# In[5]:
+
+
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+
+
+# In[6]:
+
+
+stop_words = stopwords.words('english')
+
+
+# In[7]:
+
+
+amazon_df['review'] = amazon_df['review'].apply(lambda x: ' '.join([word for word in x.split() if word not in (stop_words)]))
+
+
+# In[8]:
+
+
+nltk.download('punkt');
+
+
+# In[9]:
+
+
+def tokenize(column):
+
+    tokens = nltk.word_tokenize(column)
+    return [w for w in tokens if w.isalpha()]
+
+
+# In[10]:
+
+
+amazon_df['review'] = amazon_df.apply(lambda x: tokenize(x['review']), axis=1)
+
+
+# In[11]:
+
+
+from nltk.stem import PorterStemmer
+stemmer = PorterStemmer()
+
+
+# In[12]:
+
+
+amazon_df['review'] = amazon_df['review'].apply(lambda x: [stemmer.stem(y) for y in x])
+
+
+# In[13]:
+
+
+#Copy df for TF-IDF
+amazon_copy = amazon_df.copy()
+
+
+# In[14]:
+
+
+#Split dataset
+train, test = train_test_split(amazon_copy, test_size=0.3, random_state=1)
+X_train = train['review'].values
+X_test = test['review'].values
+y_train = train['sentiment']
+y_test = test['sentiment']
+
+
+# In[15]:
+
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+# Create feature vectors
+vectorizer = TfidfVectorizer(min_df = 5,
+                             max_df = 0.8,
+                             sublinear_tf = True,
+                             use_idf = True, lowercase = False)
+train_vectors = vectorizer.fit_transform([' '.join(review) for review in train['review']])
+test_vectors = vectorizer.transform([' '.join(review) for review in test['review']])
+
+
+# In[16]:
+
+
+# Create the SVM model
+svm = SVC(kernel='linear', probability=True)
+
+# Train the SVM model on the selected features
+svm.fit(train_vectors, y_train)
+
+
+# In[17]:
+
+
+#Copy df for IG
+amazon_ig = amazon_df.copy()
+train1, test1 = train_test_split(amazon_ig, test_size=0.3, random_state=1)
+X_train1 = train1['review'].values
+X_test1 = test1['review'].values
+y_train1 = train1['sentiment']
+y_test1 = test1['sentiment']
+
+
+# In[18]:
+
+
+from sklearn.feature_selection import mutual_info_classif
+
+# Create feature vectors
+vectorizer1 = TfidfVectorizer(min_df = 5,
+                             max_df = 0.8,
+                             sublinear_tf = True,
+                             use_idf = True, lowercase = False)
+train_vectors1 = vectorizer1.fit_transform([' '.join(review) for review in train1['review']])
+test_vectors1 = vectorizer1.transform([' '.join(review) for review in test1['review']])
+
+# Select top k features using mutual information
+k = 1000
+mutual_info = mutual_info_classif(train_vectors1, train1['sentiment'], discrete_features=True)
+top_k_idx = mutual_info.argsort()[-k:][::-1]
+
+# Create new feature vectors with only top k features
+train_vectors_new = train_vectors1[:, top_k_idx]
+test_vectors_new = test_vectors1[:, top_k_idx]
+
+
+# In[19]:
+
+
+from sklearn.svm import SVC
+
+# Build an SVM model
+svm_model = SVC(kernel='linear', probability=True)
+
+# Train the model
+svm_model.fit(train_vectors_new, train1['sentiment'])
+
+
+# Evaluation of both Models
+
+# In[20]:
+
+
+from sklearn.metrics import classification_report
+
+# Make predictions on the test data
+y_pred = svm.predict(test_vectors)
+
+# Print the classification report
+print("Model evaluation after using TF-IDF")
+print(classification_report(y_test, y_pred))
+
+# Make predictions on the test data
+y_pred1 = svm.predict(test_vectors_new)
+
+# Print the classification report
+print("Model evaluation after using Information Gain")
+print(classification_report(test1['sentiment'], y_pred1))
+
+
+# In[21]:
+
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score, roc_curve
+
+# predict the probabilities of the positive class for each model
+probs1 = svm.predict_proba(test_vectors)[:, 1]
+probs2 = svm.predict_proba(test_vectors_new)[:, 1]
+
+# calculate the AUC-ROC scores for each model
+auc1 = roc_auc_score(y_test, probs1)
+auc2 = roc_auc_score(y_test1, probs2)
+
+# calculate the ROC curves for each model
+fpr1, tpr1, thresholds1 = roc_curve(y_test, probs1)
+fpr2, tpr2, thresholds2 = roc_curve(y_test1, probs2)
+
+# plot the ROC curves
+plt.plot(fpr1, tpr1, label="Model 1 TF-IDF (AUC = %0.2f)" % auc1)
+plt.plot(fpr2, tpr2, label="Model 2 Information Gain (AUC = %0.2f)" % auc2)
+
+# add labels and title
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curves for Models 1 and 2")
+plt.legend(loc="lower right")
+
+# show the plot
+plt.show()
+
+
+# In[23]:
+
+
+from sklearn.metrics import accuracy_score
+
+# model1_predictions and model2_predictions are the predicted labels for each model
+accuracy1 = accuracy_score(y_test, y_pred)
+accuracy2 = accuracy_score(test1['sentiment'], y_pred1)
+
+import matplotlib.pyplot as plt
+
+# model1_accuracy and model2_accuracy are the accuracy scores for each model
+model_names = ['Model 1 TF-IDF', 'Model 2 Information Gain']
+accuracy = [accuracy1, accuracy2]
+
+plt.bar(model_names, accuracy)
+plt.ylabel('Accuracy')
+plt.show()
+
+
+# In[ ]:
+
+
+
+
